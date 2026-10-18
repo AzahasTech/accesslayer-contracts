@@ -176,11 +176,20 @@ pub const SELL_EVENT_NAME: Symbol = symbol_short!("sell");
 /// Event name for peer-to-peer key transfer.
 pub const TRANSFER_EVENT_NAME: Symbol = symbol_short!("transfer");
 
+/// Event name for an atomic swap proposal.
+pub const SWAP_PROPOSED_EVENT_NAME: Symbol = symbol_short!("swp_prop");
+
 /// Event name for creator key buyback.
 pub const BUYBACK_EVENT_NAME: Symbol = symbol_short!("buyback");
 
 /// Event name for referral fee earned.
 pub const REFERRAL_FEE_EARNED_EVENT_NAME: Symbol = symbol_short!("referral");
+
+/// Event name for an executed atomic swap.
+pub const SWAP_EXECUTED_EVENT_NAME: Symbol = symbol_short!("swp_exec");
+
+/// Event name for a cancelled atomic swap.
+pub const SWAP_CANCELLED_EVENT_NAME: Symbol = symbol_short!("swp_cncl");
 
 /// Event name for governance poll creation.
 pub const POLL_CREATED_EVENT_NAME: Symbol = symbol_short!("poll_new");
@@ -231,6 +240,18 @@ pub const SELL_EVENT_DATA_FIELDS: [&str; 5] =
 /// Stable field order for buyback event payloads.
 pub const BUYBACK_EVENT_DATA_FIELDS: [&str; 5] =
     ["creator", "amount", "price_paid", "new_supply", "ledger"];
+
+/// Stable field order for swap proposed event payloads.
+pub const SWAP_PROPOSED_EVENT_DATA_FIELDS: [&str; 8] = [
+    "proposal_id",
+    "proposer",
+    "counterparty",
+    "offered_key",
+    "offered_amount",
+    "requested_key",
+    "requested_amount",
+    "expires_at",
+];
 
 const MIN_POLL_OPTIONS: u32 = 2;
 const MAX_POLL_OPTIONS: u32 = 4;
@@ -367,6 +388,118 @@ pub fn transfer_event_topics(creator: &Address, from: &Address) -> (Symbol, Addr
 /// Shared buyback event topics tuple.
 pub fn buyback_event_topics(creator: &Address) -> (Symbol, Address) {
     (BUYBACK_EVENT_NAME, creator.clone())
+}
+
+/// Stable swap-proposed event payload for downstream indexers.
+///
+/// Event shape:
+/// - topics: `(SWAP_PROPOSED_EVENT_NAME, proposer, counterparty)`
+/// - data: `SwapProposedEvent`
+///
+/// Emitted by `propose_swap` when a proposer locks `offered_amount` keys of
+/// `offered_key` and requests `requested_amount` keys of `requested_key` from
+/// `counterparty`. The proposal expires at `expires_at` (ledger timestamp).
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SwapProposedEvent {
+    /// Monotonic identifier for the swap proposal.
+    pub proposal_id: u64,
+    /// Address that created the proposal and locked the offered keys.
+    pub proposer: Address,
+    /// Address allowed to accept the proposal.
+    pub counterparty: Address,
+    /// Creator key offered by the proposer.
+    pub offered_key: Address,
+    /// Number of `offered_key` keys locked by the proposer.
+    pub offered_amount: u32,
+    /// Creator key requested from the counterparty.
+    pub requested_key: Address,
+    /// Number of `requested_key` keys expected from the counterparty.
+    pub requested_amount: u32,
+    /// Ledger timestamp after which the proposal can no longer be accepted.
+    pub expires_at: u64,
+}
+
+/// Shared swap-proposed event topics tuple.
+pub fn swap_proposed_topics(
+    proposer: &Address,
+    counterparty: &Address,
+) -> (Symbol, Address, Address) {
+    (
+        SWAP_PROPOSED_EVENT_NAME,
+        proposer.clone(),
+        counterparty.clone(),
+    )
+}
+
+/// Stable swap-executed event payload for downstream indexers.
+///
+/// Event shape:
+/// - topics: `(SWAP_EXECUTED_EVENT_NAME, proposer, counterparty)`
+/// - data: `SwapExecutedEvent`
+///
+/// Emitted by `accept_swap` once both sides have been transferred atomically.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SwapExecutedEvent {
+    /// Identifier of the executed proposal.
+    pub proposal_id: u64,
+    /// Address that created the proposal.
+    pub proposer: Address,
+    /// Address that accepted the proposal.
+    pub counterparty: Address,
+    /// Creator key transferred from proposer to counterparty.
+    pub offered_key: Address,
+    /// Number of `offered_key` keys transferred.
+    pub offered_amount: u32,
+    /// Creator key transferred from counterparty to proposer.
+    pub requested_key: Address,
+    /// Number of `requested_key` keys transferred.
+    pub requested_amount: u32,
+    /// Ledger sequence number at execution.
+    pub ledger: u32,
+}
+
+/// Shared swap-executed event topics tuple.
+pub fn swap_executed_topics(
+    proposer: &Address,
+    counterparty: &Address,
+) -> (Symbol, Address, Address) {
+    (
+        SWAP_EXECUTED_EVENT_NAME,
+        proposer.clone(),
+        counterparty.clone(),
+    )
+}
+
+/// Stable swap-cancelled event payload for downstream indexers.
+///
+/// Event shape:
+/// - topics: `(SWAP_CANCELLED_EVENT_NAME, proposer)`
+/// - data: `SwapCancelledEvent`
+///
+/// Emitted by `cancel_swap` (or by the automatic expiry sweep) when the
+/// proposer's locked keys are released back to them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct SwapCancelledEvent {
+    /// Identifier of the cancelled proposal.
+    pub proposal_id: u64,
+    /// Address whose locked keys were released.
+    pub proposer: Address,
+    /// Creator key that was locked.
+    pub offered_key: Address,
+    /// Number of `offered_key` keys released.
+    pub offered_amount: u32,
+    /// `true` when the cancellation was triggered by expiry rather than the proposer.
+    pub expired: bool,
+    /// Ledger sequence number at cancellation.
+    pub ledger: u32,
+}
+
+/// Shared swap-cancelled event topics tuple.
+pub fn swap_cancelled_topics(proposer: &Address) -> (Symbol, Address) {
+    (SWAP_CANCELLED_EVENT_NAME, proposer.clone())
 }
 
 /// Event name for dividend distribution.
