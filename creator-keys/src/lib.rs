@@ -675,6 +675,8 @@ pub mod constants {
         pub const NEXT_TRADE_ID: DataKey = DataKey::NextTradeId;
         pub const LOCKUP_DURATION_SECS: DataKey = DataKey::LockupDurationSecs;
         pub const FLASH_LOAN_GUARD_LEDGERS: DataKey = DataKey::FlashLoanGuardLedgers;
+        /// Protocol-wide minimum investment amount in stroops (issue #792).
+        pub const MIN_INVESTMENT_AMOUNT: DataKey = DataKey::MinInvestmentAmount;
 
         /// Protocol-wide emergency trading halt flag (#784).
         pub const GLOBAL_TRADING_PAUSED: DataKey = DataKey::GlobalTradingPaused;
@@ -1372,6 +1374,41 @@ pub struct SimulateResponse {
     pub protocol_fee: i128,
 }
 
+/// Aggregated read-only snapshot of protocol-wide configuration, returned by
+/// [`CreatorKeysContract::get_protocol_status`] (issue #792).
+///
+/// Backs the server's `GET /protocol/status` endpoint so a single RPC call
+/// surfaces the global trading-paused flag and the core config values instead
+/// of one round trip per field.
+///
+/// # Field Stability
+///
+/// Fields are append-only. Do not reorder existing fields; the Soroban XDR
+/// encoder serialises struct fields in declaration order and downstream
+/// indexers rely on positional stability.
+///
+/// # Defaults
+///
+/// Unset config entries report their documented defaults: `false` for
+/// `global_trading_paused`, [`DEFAULT_PROTOCOL_FEE_BPS`] for
+/// `protocol_fee_bps`, `None` for `treasury_address`,
+/// [`DEFAULT_LOCKUP_DURATION_SECS`] for `lockup_duration_seconds`, and `0`
+/// for `min_investment_amount`.
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct ProtocolStatus {
+    /// `true` while the protocol-wide emergency trading halt is active.
+    pub global_trading_paused: bool,
+    /// Protocol trade fee in basis points.
+    pub protocol_fee_bps: u32,
+    /// Current treasury address, or `None` when unconfigured.
+    pub treasury_address: Option<Address>,
+    /// Sell lockup window in seconds.
+    pub lockup_duration_seconds: u64,
+    /// Minimum investment amount in stroops; `0` when unconfigured.
+    pub min_investment_amount: i128,
+}
+
 /// Initial protocol state version for read-only consumers.
 ///
 /// The actual version is stored in storage and incremented on config updates.
@@ -1992,6 +2029,9 @@ pub enum DataKey {
     GraduatedCurve(Address),
     TrustedForwarder,
     ForwarderNonce(Address),
+    /// Protocol-wide minimum investment amount in stroops required for a buy
+    /// (issue #792). Absent means no minimum is configured.
+    MinInvestmentAmount,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -13111,6 +13151,51 @@ impl CreatorKeysContract {
     /// Read-only view: whether the protocol-wide emergency trading halt is active.
     pub fn get_global_trading_paused(env: Env) -> bool {
         is_global_trading_paused(&env)
+    }
+
+    /// Read-only view: aggregated protocol configuration for the server's
+    /// `GET /protocol/status` endpoint (issue #792).
+    ///
+    /// Returns the global trading-paused flag, protocol fee basis points,
+    /// treasury address, sell-lockup duration, and minimum investment amount
+    /// in a single RPC call. Requires no authentication and never panics:
+    /// unset config entries fall back to their documented defaults (see
+    /// [`ProtocolStatus`]). The TTL of every persistent entry read here is
+    /// bumped so actively polled config never expires; extending a key that
+    /// has not been set is a no-op.
+    pub fn get_protocol_status(env: Env) -> ProtocolStatus {
+        let global_trading_paused = is_global_trading_paused(&env);
+        bump_persistent_ttl(&env, &constants::storage::GLOBAL_TRADING_PAUSED);
+
+        let protocol_fee_bps = read_protocol_fee_config(&env)
+            .map(|config| config.protocol_bps)
+            .unwrap_or(DEFAULT_PROTOCOL_FEE_BPS);
+        bump_persistent_ttl(&env, &constants::storage::FEE_CONFIG);
+
+        let treasury_address = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Address>(&constants::storage::TREASURY_ADDRESS);
+        bump_persistent_ttl(&env, &constants::storage::TREASURY_ADDRESS);
+
+        let lockup_duration_seconds =
+            read_lockup_duration_secs(&env).unwrap_or(DEFAULT_LOCKUP_DURATION_SECS);
+        bump_persistent_ttl(&env, &constants::storage::LOCKUP_DURATION_SECS);
+
+        let min_investment_amount = env
+            .storage()
+            .persistent()
+            .get::<DataKey, i128>(&constants::storage::MIN_INVESTMENT_AMOUNT)
+            .unwrap_or(0);
+        bump_persistent_ttl(&env, &constants::storage::MIN_INVESTMENT_AMOUNT);
+
+        ProtocolStatus {
+            global_trading_paused,
+            protocol_fee_bps,
+            treasury_address,
+            lockup_duration_seconds,
+            min_investment_amount,
+        }
     }
 
     /// Casts a vote to activate the global emergency pause (#784).
